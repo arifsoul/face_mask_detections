@@ -1,0 +1,39 @@
+# Basics
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.history
+.DS_Store
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+.history/
+
+# Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Data & Models
+data/
+models/*.pth
+models/*.pt
+*.zip
+*.tar.gz
+
+# MLflow
+mlruns/
+.trash/
+
+# Logs & Temporary
+*.log
+tmp/
+list_dir_output.txt

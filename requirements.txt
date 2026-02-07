@@ -1,11 +1,16 @@
-torch>=2.0.0
-torchvision>=0.15.0
-pandas>=1.5.0
-numpy>=1.21.0
-matplotlib>=3.5.0
-pillow>=9.0.0
-tqdm>=4.65.0
-scikit-learn>=1.0.0
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch
+torchvision
+pandas
+numpy
+pillow
+tqdm
+scikit-learn
 ipykernel
 kagglehub
 ultralytics
+ipywidgets
+mlflow
+seaborn
+plotly
+nbformat

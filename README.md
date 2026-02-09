@@ -4,7 +4,13 @@ This project implements a complete MLOps pipeline for Face Mask Detection, demon
 
 ## 📌 Project Overview
 
-The goal is to detect whether a person is wearing a mask, not wearing one, or wearing it incorrectly. The solution leverages:
+This project implements a complete MLOps pipeline for Face Mask Detection, demonstrating data ingestion, synthetic data generation, model training with experiment tracking, and deployment via a Streamlit inference application.
+
+The solution leverages the **YOLO26s** model, chosen for its status as a State-of-the-Art (SOTA) object detection architecture. YOLO26 is renowned for its stability, lightweight design, and exceptional inference speed, making it a preferred choice for industrial and enterprise applications where reliability is paramount.
+
+We specifically utilized the **Small (s)** variant of YOLO26 to optimize performance within a resource-constrained environment, balancing high detection accuracy with efficient computational usage.
+
+Key components include:
 
 - **Object Detection Models**: YOLO26s.
 - **MLOps**: **MLflow** for experiment tracking, model versioning, and artifact management.
@@ -39,6 +45,7 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
    ```
    git clone https://github.com/arifsoul/face_mask_detections.git
    ```
+
 2. **Create a Virtual Environment** (recommended):
 
    ```bash
@@ -48,6 +55,7 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
    # Linux/Mac
    source .venv/bin/activate
    ```
+
 3. **Install Dependencies**:
 
    ```bash

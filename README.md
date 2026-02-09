@@ -27,7 +27,6 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
 │   ├── dataset.py          # PyTorch Dataset class (FaceMaskDataset)
 │   ├── utils.py            # Utilities for YOLO conversion & stratified splitting
 │   └── mlflow_utils.py     # Custom MLflow integration helpers
-├── models/                 # Local model storage (optional)
 ├── inference.py            # Streamlit Inference Application
 ├── requirements.txt        # Project dependencies
 └── README.md               # Project documentation
@@ -40,7 +39,6 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
    ```
    git clone https://github.com/arifsoul/face_mask_detections.git
    ```
-
 2. **Create a Virtual Environment** (recommended):
 
    ```bash
@@ -50,7 +48,6 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
    # Linux/Mac
    source .venv/bin/activate
    ```
-
 3. **Install Dependencies**:
 
    ```bash
@@ -75,8 +72,8 @@ The training process is encapsulated in `notebooks/Face_Mask_Detection.ipynb`.
 
    **Examples of Synthetic Data:**
 
-   | Sample 1 | Sample 2 | Sample 3 |
-   | :---: | :---: | :---: |
+   |                 Sample 1                 |                 Sample 2                 |                 Sample 3                 |
+   | :--------------------------------------: | :--------------------------------------: | :--------------------------------------: |
    | ![Synthetic 1](docs/images/synthetic1.png) | ![Synthetic 2](docs/images/synthetic2.png) | ![Synthetic 3](docs/images/synthetic3.png) |
 
    ![Class Distribution](docs/images/class_distribution_augmented.png)

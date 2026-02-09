@@ -66,6 +66,19 @@ The training process is encapsulated in `notebooks/Face_Mask_Detection.ipynb`.
 1. **Data Loading**: Uses `src/dataset.py` to parse the Kaggle Face Mask Dataset.
 2. **Synthetic Augmentation**: Generates synthetic samples by cropping objects (masks/faces) and pasting them onto existing images to balance the dataset.
 
+   To ensure robustness and realism, the following augmentations are applied to the pasted objects:
+
+   - **`RandomRotation(degrees=15)`**: Simulates natural head tilts (up to ±15 degrees).
+   - **`RandomHorizontalFlip(p=0.5)`**: Ensures the model is invariant to face orientation (left/right).
+   - **`ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)`**: Simulates different lighting conditions and camera sensors.
+   - **`RandomAffine(translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10)`**: Adds variety in object scale (0.8x to 1.2x) and perspective (shear), mimicking varying distances and angles.
+
+   **Examples of Synthetic Data:**
+
+   | Sample 1 | Sample 2 | Sample 3 |
+   | :---: | :---: | :---: |
+   | ![Synthetic 1](docs/images/synthetic1.png) | ![Synthetic 2](docs/images/synthetic2.png) | ![Synthetic 3](docs/images/synthetic3.png) |
+
    ![Class Distribution](docs/images/class_distribution_augmented.png)
 3. **YOLO Conversion**: Uses `src.utils.stratified_yolo_split` to:
 

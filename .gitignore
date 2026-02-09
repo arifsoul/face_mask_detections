@@ -34,3 +34,4 @@ data/
 *.log
 tmp/
 list_dir_output.txt
+*.docx

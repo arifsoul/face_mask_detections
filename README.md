@@ -35,7 +35,12 @@ The goal is to detect whether a person is wearing a mask, not wearing one, or we
 
 ## 🚀 Setup & Installation
 
-1. **Clone the repository** (if applicable) or navigate to the project root.
+1. **Clone the repository:**
+
+   ```
+   git clone https://github.com/arifsoul/face_mask_detections.git
+   ```
+
 2. **Create a Virtual Environment** (recommended):
 
    ```bash

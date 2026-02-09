@@ -7,6 +7,7 @@ from torchvision.models.detection import (
 )
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.retinanet import RetinaNetHead
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from ultralytics import YOLO
 import mlflow
 import math
@@ -14,10 +15,16 @@ import sys
 import os
 import time
 from tqdm import tqdm
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import numpy as np
 
 
 # Helper function for manual training loop inside wrapper
-def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10):
+def train_one_epoch(
+    model, optimizer, data_loader, device, epoch, print_freq=10, scaler=None
+):
     model.train()
     metric_logger = {}  # Simple dict logger
     header = f"Epoch: [{epoch}]"
@@ -39,13 +46,15 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
         images = list(image.to(device) for image in images)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
+        # Mixed Precision Context
+        with torch.amp.autocast("cuda", enabled=(scaler is not None)):
+            loss_dict = model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
 
-        # reduce losses over all GPUs for logging purposes
-        loss_dict_reduced = {k: v.item() for k, v in loss_dict.items()}
-        losses_reduced = sum(loss for loss in loss_dict_reduced.values())
-        loss_value = losses_reduced
+            # reduce losses over all GPUs for logging purposes
+            loss_dict_reduced = {k: v.item() for k, v in loss_dict.items()}
+            losses_reduced = sum(loss for loss in loss_dict_reduced.values())
+            loss_value = losses_reduced
 
         if not math.isfinite(loss_value):
             print(f"Loss is {loss_value}, stopping training")
@@ -53,8 +62,14 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
             sys.exit(1)
 
         optimizer.zero_grad()
-        losses.backward()
-        optimizer.step()
+
+        if scaler is not None:
+            scaler.scale(losses).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            losses.backward()
+            optimizer.step()
 
         if lr_scheduler is not None:
             lr_scheduler.step()
@@ -67,18 +82,185 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
     return {"loss": avg_loss}
 
 
+def match_boxes(pred_boxes, true_boxes, iou_threshold=0.5):
+    """
+    Matches predicted boxes to true boxes based on IoU.
+    Returns a list of (pred_idx, true_idx) tuples.
+    """
+    if len(pred_boxes) == 0 or len(true_boxes) == 0:
+        return []
+
+    ious = torchvision.ops.box_iou(pred_boxes, true_boxes)
+    matches = []
+
+    # Greedy matching
+    # Sort by IoU to prioritize best matches? Or just iterate.
+    # Simple greedy: iterate preds, find max IoU with unused true.
+    # But usually we map each pred to best true, or true to best pred?
+    # Standard metric: For each pred, is there a true box with IoU > thresh?
+
+    # We will iterate through preds and match to available true boxes
+    # To avoid double counting true boxes, we track used indices
+
+    # Better greedy strategy: find max IoU in entire matrix, match, remove, repeat.
+    # But for simple CM, let's just find max IoU for each pred, and if > thresh, check if true is used.
+
+    # Actually, let's use a simpler per-pred check like in the notebook
+    # Note: This is an approximation for CM.
+    # Strict mAP requires sorting by confidence. Here we just want "What did this pred match to?"
+
+    # Let's do: For each pred, find max IoU. If > 0.5, it's a candidate.
+    # If multiple preds match same true, only one counts (usually highest conf).
+    # Since we didn't sort by score here (though they should be high conf from filtering),
+    # let's do a simple greedy match.
+
+    # clone to modify
+    ious = ious.clone()
+
+    for _ in range(len(pred_boxes)):
+        # Find global max
+        if ious.numel() == 0:
+            break
+        val, idx = ious.flatten().max(0)
+        if val < iou_threshold:
+            break
+
+        # Convert 1D idx to 2D
+        pred_idx = idx // ious.size(1)
+        true_idx = idx % ious.size(1)
+
+        matches.append((pred_idx.item(), true_idx.item()))
+
+        # Mask out row and col
+        ious[pred_idx, :] = -1
+        ious[:, true_idx] = -1
+
+    return matches
+
+
 @torch.no_grad()
 def evaluate(model, data_loader, device):
-    model.train()  # ROI heads require training mode to return losses usually
+    model.eval()
+    metric = MeanAveragePrecision()
+
+    # First pass: Compute Loss (Requires Train Mode for R-CNN)
+    model.train()
     losses = []
-    for images, targets in tqdm(data_loader, desc="Validation"):
+    for images, targets in tqdm(data_loader, desc="Validation (Loss)"):
         images = list(image.to(device) for image in images)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         loss_dict = model(images, targets)
         losses.append(sum(loss for loss in loss_dict.values()).item())
 
     avg_loss = sum(losses) / len(losses) if losses else 0
-    return {"val_loss": avg_loss}
+
+    # Second pass: Compute Metrics (Requires Eval Mode)
+    model.eval()
+
+    all_preds_cls = []
+    all_true_cls = []
+
+    for images, targets in tqdm(data_loader, desc="Validation (Metrics)"):
+        images = list(image.to(device) for image in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+        preds = model(images)
+
+        # Filter predictions for metric calculation (Speed up & Fix mAP 0.0 issue)
+        filtered_preds = []
+        for p in preds:
+            # Standard COCO threshold is often 0.05 confidence for evaluation
+            # Limiting to top 100 detections per image is also standard
+            keep = p["scores"] > 0.05
+            filtered_preds.append(
+                {
+                    "boxes": p["boxes"][keep],
+                    "scores": p["scores"][keep],
+                    "labels": p["labels"][keep],
+                }
+            )
+
+        metric.update(filtered_preds, targets)
+
+        # Confusion Matrix Accumulation
+        for i, pred in enumerate(preds):
+            target = targets[i]
+
+            true_boxes = target["boxes"]
+            true_labels = target["labels"]
+
+            pred_boxes = pred["boxes"]
+            pred_labels = pred["labels"]
+            pred_scores = pred["scores"]
+
+            # Filter low confidence for CM
+            keep = pred_scores > 0.5
+            pred_boxes = pred_boxes[keep]
+            pred_labels = pred_labels[keep]
+
+            matches = match_boxes(pred_boxes, true_boxes)
+
+            matched_pred_indices = set()
+            matched_true_indices = set()
+
+            for p_idx, t_idx in matches:
+                all_preds_cls.append(pred_labels[p_idx].item())
+                all_true_cls.append(true_labels[t_idx].item())
+                matched_pred_indices.add(p_idx)
+                matched_true_indices.add(t_idx)
+
+            # False Negatives (Missed matches) -> Target exists, Pred is Background (0)
+            for t_idx in range(len(true_labels)):
+                if t_idx not in matched_true_indices:
+                    all_true_cls.append(true_labels[t_idx].item())
+                    all_preds_cls.append(0)
+
+            # False Positives (Spurious) -> Pred exists, True is Background (0)
+            for p_idx in range(len(pred_labels)):
+                if p_idx not in matched_pred_indices:
+                    all_true_cls.append(0)
+                    all_preds_cls.append(pred_labels[p_idx].item())
+
+    m_metrics = metric.compute()
+
+    results = {"val_loss": avg_loss}
+
+    # Confusion Matrix Plotting
+    if all_true_cls and all_preds_cls:
+        # Determine unique labels dynamically
+        unique_labels = sorted(list(set(all_true_cls) | set(all_preds_cls)))
+        max_id = max(unique_labels) if unique_labels else 0
+        cm_labels = list(range(max_id + 1))
+
+        cm = confusion_matrix(all_true_cls, all_preds_cls, labels=cm_labels)
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        ax.set_title("Confusion Matrix")
+
+        # Save to temp
+        import tempfile
+
+        # Create temp file, close it so we can read/write by name safely if needed,
+        # but here we just need name. delete=False to keep it for logging.
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)  # Close file descriptor
+
+        plt.savefig(path)
+        plt.close(fig)
+        results["cm_path"] = path
+
+    # Add mAP metrics to results
+    for k, v in m_metrics.items():
+        if isinstance(v, torch.Tensor):
+            if v.numel() == 1:
+                results[k] = v.item()
+        else:
+            results[k] = v
+    return results
 
 
 # Wrapper for TorchVision Models to match YOLO API
@@ -139,10 +321,19 @@ class TorchVisionWrapper:
 
         results = {}
 
+        # Scaler for AMP
+        scaler = torch.amp.GradScaler("cuda") if device.type == "cuda" else None
+
         for epoch in range(1, epochs + 1):
             # Train one epoch
             train_metrics = train_one_epoch(
-                self.model, optimizer, data_loader, device, epoch, print_freq=10
+                self.model,
+                optimizer,
+                data_loader,
+                device,
+                epoch,
+                print_freq=10,
+                scaler=scaler,
             )
 
             lr_scheduler.step()
@@ -154,9 +345,27 @@ class TorchVisionWrapper:
             # Validation
             if test_loader:
                 val_metrics = evaluate(self.model, test_loader, device)
-                mlflow.log_metric("val_loss", val_metrics["val_loss"], step=epoch)
+
+                # Log CM artifact if it exists
+                if "cm_path" in val_metrics:
+                    try:
+                        mlflow.log_artifact(
+                            val_metrics["cm_path"], artifact_path="confusion_matrices"
+                        )
+                        os.remove(val_metrics["cm_path"])  # cleanup
+                    except Exception as e:
+                        print(f"Failed to log CM: {e}")
+                    del val_metrics["cm_path"]  # Remove from metrics dict
+
+                # Log all metrics
+                for k, v in val_metrics.items():
+                    mlflow.log_metric(k, v, step=epoch)
+
+                # Print key metrics
+                map_val = val_metrics.get("map", 0)
+                map_50 = val_metrics.get("map_50", 0)
                 print(
-                    f"Epoch {epoch + 1}/{epochs} Val Loss: {val_metrics['val_loss']:.4f}"
+                    f"Epoch {epoch + 1}/{epochs} Val Loss: {val_metrics['val_loss']:.4f} | mAP: {map_val:.4f} | mAP50: {map_50:.4f}"
                 )
                 results = val_metrics
 

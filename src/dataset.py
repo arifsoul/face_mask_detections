@@ -18,17 +18,42 @@ class FaceMaskDataset(torch.utils.data.Dataset):
         self.img_dir = os.path.join(root, "images")
         self.annot_dir = os.path.join(root, "annotations")
 
-        self.imgs = list(sorted(os.listdir(self.img_dir)))
-        self.xmls = list(sorted(os.listdir(self.annot_dir)))
+        # Robust matching of images and xmls
+        if not os.path.exists(self.img_dir) or not os.path.exists(self.annot_dir):
+            self.imgs = []
+            self.xmls = []
+        else:
+            all_imgs = sorted(os.listdir(self.img_dir))
+            all_xmls = sorted(os.listdir(self.annot_dir))
 
-        # Ensure that images and xmls match
-        # This is a naive check; one might want to match by filename more robustly
+            # Map basename to filename
+            img_map = {
+                os.path.splitext(f)[0]: f
+                for f in all_imgs
+                if f.lower().endswith((".png", ".jpg", ".jpeg"))
+            }
+            xml_map = {
+                os.path.splitext(f)[0]: f
+                for f in all_xmls
+                if f.lower().endswith(".xml")
+            }
+
+            # Intersection
+            common_names = sorted(list(set(img_map.keys()) & set(xml_map.keys())))
+
+            self.imgs = [img_map[n] for n in common_names]
+            self.xmls = [xml_map[n] for n in common_names]
+
+            if len(self.imgs) != len(self.xmls):
+                print(
+                    f"Warning: Root {root} has mismatch: Imgs={len(all_imgs)}, XMLs={len(all_xmls)}, Matched={len(self.imgs)}"
+                )
 
         # Label mapping
         self.label_map = {
             "with_mask": 1,
             "without_mask": 2,
-            "mask_weared_incorrectly": 3,
+            "mask_weared_incorrect": 3,
         }
 
     def __getitem__(self, idx):
@@ -46,7 +71,7 @@ class FaceMaskDataset(torch.utils.data.Dataset):
         labels = []
 
         for obj in root.findall("object"):
-            name = obj.find("name").text
+            name = obj.find("name").text.strip()
             bndbox = obj.find("bndbox")
             xmin = int(bndbox.find("xmin").text)
             ymin = int(bndbox.find("ymin").text)

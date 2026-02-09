@@ -11,6 +11,7 @@ kagglehub
 ultralytics
 ipywidgets
 mlflow
+matplotlib
 seaborn
-plotly
 nbformat
+torchmetrics[detection]

@@ -1,1 +1,1 @@
-mlflow ui --backend-store-uri sqlite:///mlflow.db
+mlflow ui --backend-store-uri mlruns

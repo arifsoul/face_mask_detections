@@ -1,0 +1,6 @@
+artifact_location: file:///d:\_pribadi\verihubs\face_mask_detections\mlruns/837942597571710281
+creation_time: 1770628679348
+experiment_id: '837942597571710281'
+last_update_time: 1770628679348
+lifecycle_stage: active
+name: Face_Mask_Detection_yolo26s

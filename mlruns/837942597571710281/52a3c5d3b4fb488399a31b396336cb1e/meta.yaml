@@ -1,0 +1,14 @@
+artifact_uri: file:///d:\_pribadi\verihubs\face_mask_detections\mlruns/837942597571710281/52a3c5d3b4fb488399a31b396336cb1e/artifacts
+end_time: 1770629329236
+entry_point_name: ''
+experiment_id: '837942597571710281'
+lifecycle_stage: active
+run_id: 52a3c5d3b4fb488399a31b396336cb1e
+run_name: yolo_run
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1770628679701
+status: 3
+tags: []
+user_id: Asus

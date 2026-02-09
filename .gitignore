@@ -24,13 +24,10 @@ ENV/
 
 # Data & Models
 data/
-models/*.pth
-models/*.pt
 *.zip
 *.tar.gz
 
 # MLflow
-mlruns/
 .trash/
 
 # Logs & Temporary

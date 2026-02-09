@@ -1,156 +1,170 @@
-import argparse
-import torch
-import torchvision.transforms as T
-from PIL import Image, ImageDraw, ImageFont
+import streamlit as st
+import mlflow
 import os
-import time
+import pandas as pd
+import tempfile
+from ultralytics import YOLO
+from PIL import Image
+import shutil
 
-from src.model import get_model_instance_segmentation
+# Page Config
+st.set_page_config(page_title="Mask Detection Inference", layout="wide")
+
+st.title("😷 Face Mask Detection - MLflow Inference")
+
+# -------------------------------------------------------------------------
+# Sidebar: MLflow Configuration & Model Selection
+# -------------------------------------------------------------------------
+st.sidebar.header("MLflow Configuration")
+
+# Path to local mlruns relative to this script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+mlruns_dir = os.path.join(script_dir, "mlruns")
+tracking_uri = f"file:///{mlruns_dir}"
+
+try:
+    mlflow.set_tracking_uri(tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    st.sidebar.success(f"Connected to MLflow at: {mlruns_dir}")
+except Exception as e:
+    st.sidebar.error(f"Could not connect to MLflow: {e}")
+    st.stop()
+
+# 1. Select Experiment
+experiments = client.search_experiments()
+exp_names = [e.name for e in experiments if e.lifecycle_stage == "active"]
+
+if not exp_names:
+    st.warning("No active experiments found.")
+    st.stop()
+
+selected_exp_name = st.sidebar.selectbox("Select Experiment", exp_names)
+selected_exp = next(e for e in experiments if e.name == selected_exp_name)
+
+# 2. Select Run
+runs = client.search_runs(
+    experiment_ids=[selected_exp.experiment_id], order_by=["attribute.start_time DESC"]
+)
+if not runs:
+    st.sidebar.warning("No runs found for this experiment.")
+    st.stop()
+
+# Create a readable list of runs (Name + ID + Start Time)
+run_options = {
+    f"{r.data.tags.get('mlflow.runName', 'Unnamed')} ({r.info.run_id[:7]})": r
+    for r in runs
+}
+selected_run_label = st.sidebar.selectbox("Select Run", list(run_options.keys()))
+selected_run = run_options[selected_run_label]
+run_id = selected_run.info.run_id
+
+# 3. Select Model Artifact
+model_type = st.sidebar.radio(
+    "Model Version", ["Best (weights/best.pt)", "Last (weights/last.pt)"]
+)
+artifact_path = "weights/best.pt" if "Best" in model_type else "weights/last.pt"
 
 
-def get_transform():
-    return T.Compose(
-        [
-            T.ToTensor(),
-        ]
-    )
+# Download Logic
+@st.cache_resource(show_spinner=False)
+def load_yolo_model(run_id, artifact_path, tracking_uri):
+    # Ensure raw URI doesn't break downloading
+    mlflow.set_tracking_uri(tracking_uri)
 
+    # Create a temp directory for the artifact
+    local_dir = os.path.join(tempfile.gettempdir(), "mlflow_models", run_id)
+    os.makedirs(local_dir, exist_ok=True)
 
-def load_model(model_path, num_classes, device):
-    model = get_model_instance_segmentation(num_classes)
-    if os.path.exists(model_path):
-        print(f"Loading model from {model_path}")
-        state_dict = torch.load(model_path, map_location=device)
-        model.load_state_dict(state_dict)
-    else:
-        print(
-            f"Warning: Model path {model_path} not found. Using initialized weights (random)."
-        )
+    target_path = os.path.join(local_dir, os.path.basename(artifact_path))
 
-    model.to(device)
-    model.eval()
-    return model
+    # Check if cached
+    if not os.path.exists(target_path):
+        with st.spinner(f"Downloading {artifact_path} from MLflow..."):
+            try:
+                # download_artifacts returns the local path
+                downloaded_path = mlflow.artifacts.download_artifacts(
+                    run_id=run_id, artifact_path=artifact_path, dst_path=local_dir
+                )
+                # If artifact_path was a dir, it downloads content. If file, it downloads file.
+                # Adjust if download_artifacts creates nested structure
+                if not os.path.exists(target_path):
+                    # Try to find it if structure differs
+                    possible = os.path.join(local_dir, artifact_path)
+                    if os.path.exists(possible):
+                        target_path = possible
+            except Exception as e:
+                return None, f"Error downloading artifact: {e}"
 
-
-def predict_image(model, image_path, device, threshold=0.5):
-    img = Image.open(image_path).convert("RGB")
-    transform = get_transform()
-    img_tensor = transform(img).to(device)
-
-    with torch.no_grad():
-        start_time = time.time()
-        # Model expects a list of tensors
-        prediction = model([img_tensor])
-        end_time = time.time()
-
-    print(f"Inference time: {end_time - start_time:.4f}s")
-
-    # Process prediction
-    pred = prediction[0]
-
-    boxes = pred["boxes"].cpu().numpy()
-    scores = pred["scores"].cpu().numpy()
-    labels = pred["labels"].cpu().numpy()
-
-    # Filter by threshold
-    keep = scores >= threshold
-    boxes = boxes[keep]
-    scores = scores[keep]
-    labels = labels[keep]
-
-    return img, boxes, labels, scores
-
-
-def draw_prediction(img, boxes, labels, scores):
-    draw = ImageDraw.Draw(img)
-    # Mapping: 0=background (not used), 1=with_mask, 2=without_mask, 3=incorrect
-    label_map = {1: "With Mask", 2: "Without Mask", 3: "Incorrect Mask"}
-    color_map = {1: "green", 2: "red", 3: "orange"}
+    if not os.path.exists(target_path):
+        return None, f"Artifact not found at {target_path}"
 
     try:
-        font = ImageFont.truetype("arial.ttf", 15)
-    except IOError:
-        font = ImageFont.load_default()
-
-    for box, label, score in zip(boxes, labels, scores):
-        xmin, ymin, xmax, ymax = box
-        label_text = label_map.get(label, f"Class {label}")
-        color = color_map.get(label, "blue")
-
-        # Draw box
-        draw.rectangle([(xmin, ymin), (xmax, ymax)], outline=color, width=3)
-
-        # Draw label
-        text = f"{label_text}: {score:.2f}"
-
-        # Calculate text size using textbbox (for Pillow >= 9.2.0) or generic estimation
-        if hasattr(draw, "textbbox"):
-            text_bbox = draw.textbbox((xmin, ymin), text, font=font)
-            text_w = text_bbox[2] - text_bbox[0]
-            text_h = text_bbox[3] - text_bbox[1]
-        else:
-            text_w, text_h = draw.textsize(text, font=font)
-
-        draw.rectangle(
-            [(xmin, ymin - text_h - 4), (xmin + text_w + 4, ymin)], fill=color
-        )
-        draw.text((xmin + 2, ymin - text_h - 2), text, fill="white", font=font)
-
-    return img
+        model = YOLO(target_path)
+        return model, None
+    except Exception as e:
+        return None, f"Error loading YOLO model: {e}"
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Face Mask Detection Inference")
-    parser.add_argument(
-        "--input", required=True, help="Path to input image or directory"
-    )
-    parser.add_argument(
-        "--model", default="models/model_best.pth", help="Path to trained model weights"
-    )
-    parser.add_argument("--output", default="output", help="Directory to save results")
-    parser.add_argument(
-        "--threshold", type=float, default=0.5, help="Confidence threshold"
-    )
-    parser.add_argument(
-        "--device",
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device (cuda/cpu)",
-    )
-
-    args = parser.parse_args()
-
-    # 3 Classes + Background
-    num_classes = 4
-    device = torch.device(args.device)
-
-    model = load_model(args.model, num_classes, device)
-
-    if not os.path.exists(args.output):
-        os.makedirs(args.output)
-
-    inputs = []
-    if os.path.isdir(args.input):
-        for f in os.listdir(args.input):
-            if f.lower().endswith((".png", ".jpg", ".jpeg")):
-                inputs.append(os.path.join(args.input, f))
+# Load Button
+if st.sidebar.button("Load Model"):
+    model, err = load_yolo_model(run_id, artifact_path, tracking_uri)
+    if err:
+        st.error(err)
     else:
-        inputs.append(args.input)
+        st.session_state["model"] = model
+        st.session_state["model_name"] = f"{selected_exp_name} - {selected_run_label}"
+        st.success(f"Loaded {st.session_state['model_name']}")
 
-    for img_path in inputs:
-        print(f"Processing {img_path}...")
-        try:
-            orig_img, boxes, labels, scores = predict_image(
-                model, img_path, device, args.threshold
-            )
-            result_img = draw_prediction(orig_img, boxes, labels, scores)
+# -------------------------------------------------------------------------
+# Main Logic: Inference
+# -------------------------------------------------------------------------
 
-            filename = os.path.basename(img_path)
-            save_path = os.path.join(args.output, f"pred_{filename}")
-            result_img.save(save_path)
-            print(f"Saved result to {save_path}")
-        except Exception as e:
-            print(f"Error processing {img_path}: {e}")
+if "model" in st.session_state:
+    st.markdown(f"### Current Model: **{st.session_state['model_name']}**")
 
+    conf_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.45, 0.05)
 
-if __name__ == "__main__":
-    main()
+    uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
+
+    if uploaded_file:
+        col1, col2 = st.columns(2)
+
+        # Display Input
+        params = {"conf": conf_threshold}
+
+        image = Image.open(uploaded_file)
+        with col1:
+            st.image(image, caption="Uploaded Image", use_container_width=True)
+
+        # Inference
+        model = st.session_state["model"]
+        results = model.predict(image, conf=conf_threshold)
+
+        # Plot
+        res_plotted = results[0].plot()[:, :, ::-1]  # BGR to RGB
+
+        with col2:
+            st.image(res_plotted, caption="Prediction Result", use_container_width=True)
+
+        # Detailed Results
+        with st.expander("Detection Details"):
+            boxes = results[0].boxes
+            if len(boxes) > 0:
+                data = []
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    label = results[0].names[cls_id]
+                    data.append(
+                        {
+                            "Class": label,
+                            "Confidence": conf,
+                            "Box": box.xywh.tolist()[0],
+                        }
+                    )
+                st.write(pd.DataFrame(data))
+            else:
+                st.info("No detections found.")
+
+else:
+    st.info("👈 Please select and load a model from the sidebar to start.")
